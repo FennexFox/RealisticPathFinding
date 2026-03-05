@@ -63,6 +63,7 @@ namespace RealisticPathFinding.Patches
         new[] { typeof(Curve),                    // Colossal.Mathematics.Curve
         typeof(CarLane),                  // Game.Net.CarLane
         typeof(MasterLane),               // Game.Net.MasterLane
+        typeof(NetTrackLane),             // Game.Net.TrackLane
         typeof(CarLaneData),              // Game.Net.CarLaneData
         typeof(PathfindCarData),          // Game.Pathfind.PathfindCarData
         typeof(RuleFlags),                // Game.Pathfind.RuleFlags
