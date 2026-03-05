@@ -24,8 +24,10 @@ namespace RealisticPathFinding.Patches
     // public static PathSpecification GetCarDriveSpecification(
     //   Curve curve,
     //   Game.Net.CarLane carLane,
+    //   Game.Net.MasterLane masterLane,
     //   CarLaneData carLaneData,
     //   PathfindCarData carPathfindData,
+    //   RuleFlags ruleFlags,
     //   float density)
     [HarmonyPatch(typeof(PathUtils), nameof(PathUtils.GetCarDriveSpecification),
         new[] { typeof(Curve),                    // Colossal.Mathematics.Curve
@@ -55,9 +57,11 @@ namespace RealisticPathFinding.Patches
     // public static PathSpecification GetCarDriveSpecification(
     //   Curve curve,
     //   Game.Net.CarLane carLane,
+    //   Game.Net.MasterLane masterLane,
     //   Game.Net.TrackLane trackLaneData,
     //   CarLaneData carLaneData,
     //   PathfindCarData carPathfindData,
+    //   RuleFlags ruleFlags,
     //   float density)
     [HarmonyPatch(typeof(PathUtils), nameof(PathUtils.GetCarDriveSpecification),
         new[] { typeof(Curve),                    // Colossal.Mathematics.Curve
@@ -89,6 +93,7 @@ namespace RealisticPathFinding.Patches
     //   Game.Net.CarLane carLaneData,
     //   PathfindCarData carPathfindData,
     //   PathfindTransportData transportPathfindData,
+    //   RuleFlags ruleFlags,
     //   float density)
     [HarmonyPatch(typeof(PathUtils), nameof(PathUtils.GetTaxiDriveSpecification),
         new[] { typeof(Curve),               // Colossal.Mathematics.Curve

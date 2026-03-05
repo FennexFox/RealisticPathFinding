@@ -67,6 +67,7 @@ namespace RealisticPathFinding
             //updateSystem.UpdateAfter<RealisticPathFinding.Systems.RPFResidentAISystem, Game.Simulation.ResidentAISystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateAt<RealisticPathFinding.Systems.WalkSpeedUpdaterSystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateAt<RealisticPathFinding.Systems.CarTurnAndHierarchyBiasSystem>(SystemUpdatePhase.GameSimulation);
+            updateSystem.UpdateAt<RealisticPathFinding.Systems.BusLanePenaltyRefreshSystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateAt<RealisticPathFinding.Systems.PedestrianWalkCostFactorSystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateAt<RealisticPathFinding.Systems.PedestrianCrosswalkCostFactorSystem>(SystemUpdatePhase.GameSimulation);
             
