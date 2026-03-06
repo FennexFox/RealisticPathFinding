@@ -38,15 +38,44 @@ namespace RealisticPathFinding
         public const string OtherSection = "Other";
         public const string OtherGroup = "OtherGroup";
 
+        private float _operationalWaitWeight;
+        private bool _operationalWaitWeightLoaded;
+        private float _transferDisutilityFactor;
+        private bool _transferDisutilityFactorLoaded;
+        private float _feederTrunkDisutilityFactor;
+        private bool _feederTrunkDisutilityFactorLoaded;
+        private float _scheduledModeDisutilityFactor;
+        private bool _scheduledModeDisutilityFactorLoaded;
+        private float _crowdingDiscomfortFactor;
+        private bool _crowdingDiscomfortFactorLoaded;
+        private float _crowdingDiscomfortThreshold;
+        private bool _crowdingDiscomfortThresholdLoaded;
+        private float _crowdingOverloadWaitFactor;
+
+        private float _legacyWaitingTimeFactor;
+        private bool _legacyWaitingTimeFactorLoaded;
+        private float _legacyTransferPenalty;
+        private bool _legacyTransferPenaltyLoaded;
+        private float _legacyFeederTrunkTransferPenalty;
+        private bool _legacyFeederTrunkTransferPenaltyLoaded;
+        private float _legacyScheduledWaitFactor;
+        private bool _legacyScheduledWaitFactorLoaded;
+        private float _legacyCrowdingFactor;
+        private bool _legacyCrowdingFactorLoaded;
+        private float _legacyCrowdingStopThreshold;
+        private bool _legacyCrowdingStopThresholdLoaded;
+
         public Setting(IMod mod) : base(mod)
         {
-            if (transfer_penalty == 0) SetDefaults();
+            SetDefaults();
         }
 
         public override void SetDefaults()
         {
             SetParameters();
+            ResetTransitMigrationTracking();
         }
+
         public void SetParameters()
         {
             car_mode_weight = 0.90f;
@@ -58,10 +87,10 @@ namespace RealisticPathFinding
             local_bias = 0.1f;
             alleyway_bias = 0.15f;
             uturn_sec_penalty = 4f;
-            transfer_penalty = 1.5f;
-            feeder_trunk_transfer_penalty = 1.2f;
-            waiting_time_factor = 1.0f;
-            scheduled_wt_factor = 0.5f;
+            _transferDisutilityFactor = 1.5f;
+            _feederTrunkDisutilityFactor = 1.2f;
+            _operationalWaitWeight = 1.0f;
+            _scheduledModeDisutilityFactor = 0.5f;
             bus_mode_weight = 1.00f;
             tram_mode_weight = 0.95f;
             subway_mode_weight = 0.9f;
@@ -70,8 +99,9 @@ namespace RealisticPathFinding
             average_walk_speed_teen = 3.3f;
             average_walk_speed_adult = 3.1f;
             average_walk_speed_elderly = 2.6f;
-            crowdness_factor = 0.3f;
-            crowdness_stop_threashold = 0.65f;
+            _crowdingDiscomfortFactor = 0.3f;
+            _crowdingDiscomfortThreshold = 0.65f;
+            _crowdingOverloadWaitFactor = 1.0f;
             walk_long_comfort_m = 600f;
             walk_long_ramp_m = 700f;
             walk_long_min_mult = 0.3f;
@@ -98,6 +128,48 @@ namespace RealisticPathFinding
             bike_teen_percent = 40;
             bike_adult_percent = 25;
             bike_senior_percent = 10;
+        }
+
+        public void MigrateLegacyTransitSettings()
+        {
+            TryMigrateTransitSetting(ref _operationalWaitWeight, ref _operationalWaitWeightLoaded, _legacyWaitingTimeFactorLoaded, _legacyWaitingTimeFactor);
+            TryMigrateTransitSetting(ref _transferDisutilityFactor, ref _transferDisutilityFactorLoaded, _legacyTransferPenaltyLoaded, _legacyTransferPenalty);
+            TryMigrateTransitSetting(ref _feederTrunkDisutilityFactor, ref _feederTrunkDisutilityFactorLoaded, _legacyFeederTrunkTransferPenaltyLoaded, _legacyFeederTrunkTransferPenalty);
+            TryMigrateTransitSetting(ref _scheduledModeDisutilityFactor, ref _scheduledModeDisutilityFactorLoaded, _legacyScheduledWaitFactorLoaded, _legacyScheduledWaitFactor);
+            TryMigrateTransitSetting(ref _crowdingDiscomfortFactor, ref _crowdingDiscomfortFactorLoaded, _legacyCrowdingFactorLoaded, _legacyCrowdingFactor);
+            TryMigrateTransitSetting(ref _crowdingDiscomfortThreshold, ref _crowdingDiscomfortThresholdLoaded, _legacyCrowdingStopThresholdLoaded, _legacyCrowdingStopThreshold);
+        }
+
+        private void ResetTransitMigrationTracking()
+        {
+            _operationalWaitWeightLoaded = false;
+            _transferDisutilityFactorLoaded = false;
+            _feederTrunkDisutilityFactorLoaded = false;
+            _scheduledModeDisutilityFactorLoaded = false;
+            _crowdingDiscomfortFactorLoaded = false;
+            _crowdingDiscomfortThresholdLoaded = false;
+            _legacyWaitingTimeFactor = 0f;
+            _legacyTransferPenalty = 0f;
+            _legacyFeederTrunkTransferPenalty = 0f;
+            _legacyScheduledWaitFactor = 0f;
+            _legacyCrowdingFactor = 0f;
+            _legacyCrowdingStopThreshold = 0f;
+
+            _legacyWaitingTimeFactorLoaded = false;
+            _legacyTransferPenaltyLoaded = false;
+            _legacyFeederTrunkTransferPenaltyLoaded = false;
+            _legacyScheduledWaitFactorLoaded = false;
+            _legacyCrowdingFactorLoaded = false;
+            _legacyCrowdingStopThresholdLoaded = false;
+        }
+
+        private static void TryMigrateTransitSetting(ref float currentValue, ref bool currentValueLoaded, bool legacyValueLoaded, float legacyValue)
+        {
+            if (!currentValueLoaded && legacyValueLoaded)
+            {
+                currentValue = legacyValue;
+                currentValueLoaded = true;
+            }
         }
 
         [SettingsUISlider(min = 0.5f, max = 2f, step = 0.05f, scalarMultiplier = 1, unit = Unit.kFloatTwoFractions)]
@@ -139,27 +211,138 @@ namespace RealisticPathFinding
 
         [SettingsUISlider(min = 0, max = 2, step = 0.1f, scalarMultiplier = 1, unit = Unit.kFloatSingleFraction)]
         [SettingsUISection(TransitSection, WaitingTimeGroup)]
-        public float waiting_time_factor { get; set; } 
+        public float operational_wait_weight
+        {
+            get => _operationalWaitWeight;
+            set
+            {
+                _operationalWaitWeight = value;
+                _operationalWaitWeightLoaded = true;
+            }
+        }
 
         [SettingsUISlider(min = 0, max = 3, step = 0.1f, scalarMultiplier = 1, unit = Unit.kFloatSingleFraction)]
         [SettingsUISection(TransitSection, WaitingTimeGroup)]
-        public float transfer_penalty { get; set; }
+        public float transfer_disutility_factor
+        {
+            get => _transferDisutilityFactor;
+            set
+            {
+                _transferDisutilityFactor = value;
+                _transferDisutilityFactorLoaded = true;
+            }
+        }
 
         [SettingsUISlider(min = 0, max = 3, step = 0.1f, scalarMultiplier = 1, unit = Unit.kFloatSingleFraction)]
         [SettingsUISection(TransitSection, WaitingTimeGroup)]
-        public float feeder_trunk_transfer_penalty { get; set; }
+        public float feeder_trunk_disutility_factor
+        {
+            get => _feederTrunkDisutilityFactor;
+            set
+            {
+                _feederTrunkDisutilityFactor = value;
+                _feederTrunkDisutilityFactorLoaded = true;
+            }
+        }
 
         [SettingsUISlider(min = 0, max = 1, step = 0.1f, scalarMultiplier = 1, unit = Unit.kFloatSingleFraction)]
         [SettingsUISection(TransitSection, WaitingTimeGroup)]
-        public float scheduled_wt_factor { get; set; }
+        public float scheduled_mode_disutility_factor
+        {
+            get => _scheduledModeDisutilityFactor;
+            set
+            {
+                _scheduledModeDisutilityFactor = value;
+                _scheduledModeDisutilityFactorLoaded = true;
+            }
+        }
 
         [SettingsUISlider(min = 0, max = 2f, step = 0.1f, scalarMultiplier = 1, unit = Unit.kFloatSingleFraction)]
         [SettingsUISection(TransitSection, WaitingTimeGroup)]
-        public float crowdness_factor { get; set; }
+        public float crowding_discomfort_factor
+        {
+            get => _crowdingDiscomfortFactor;
+            set
+            {
+                _crowdingDiscomfortFactor = value;
+                _crowdingDiscomfortFactorLoaded = true;
+            }
+        }
 
         [SettingsUISlider(min = 0, max = 1f, step = 0.05f, scalarMultiplier = 1, unit = Unit.kFloatTwoFractions)]
         [SettingsUISection(TransitSection, WaitingTimeGroup)]
-        public float crowdness_stop_threashold { get; set; }
+        public float crowding_discomfort_threshold
+        {
+            get => _crowdingDiscomfortThreshold;
+            set
+            {
+                _crowdingDiscomfortThreshold = value;
+                _crowdingDiscomfortThresholdLoaded = true;
+            }
+        }
+
+        [SettingsUISlider(min = 0, max = 2f, step = 0.1f, scalarMultiplier = 1, unit = Unit.kFloatSingleFraction)]
+        [SettingsUISection(TransitSection, WaitingTimeGroup)]
+        public float crowding_overload_wait_factor
+        {
+            get => _crowdingOverloadWaitFactor;
+            set => _crowdingOverloadWaitFactor = value;
+        }
+
+        // Legacy transit setting names are kept as write-only aliases so older .coc files still load.
+        public float waiting_time_factor
+        {
+            set
+            {
+                _legacyWaitingTimeFactor = value;
+                _legacyWaitingTimeFactorLoaded = true;
+            }
+        }
+
+        public float transfer_penalty
+        {
+            set
+            {
+                _legacyTransferPenalty = value;
+                _legacyTransferPenaltyLoaded = true;
+            }
+        }
+
+        public float feeder_trunk_transfer_penalty
+        {
+            set
+            {
+                _legacyFeederTrunkTransferPenalty = value;
+                _legacyFeederTrunkTransferPenaltyLoaded = true;
+            }
+        }
+
+        public float scheduled_wt_factor
+        {
+            set
+            {
+                _legacyScheduledWaitFactor = value;
+                _legacyScheduledWaitFactorLoaded = true;
+            }
+        }
+
+        public float crowdness_factor
+        {
+            set
+            {
+                _legacyCrowdingFactor = value;
+                _legacyCrowdingFactorLoaded = true;
+            }
+        }
+
+        public float crowdness_stop_threashold
+        {
+            set
+            {
+                _legacyCrowdingStopThreshold = value;
+                _legacyCrowdingStopThresholdLoaded = true;
+            }
+        }
 
         [SettingsUISlider(min = 0.5f, max = 2f, step = 0.05f, scalarMultiplier = 1, unit = Unit.kFloatTwoFractions)]
         [SettingsUISection(TransitSection, ModeWeightGroup)]
@@ -368,19 +551,19 @@ namespace RealisticPathFinding
             // ============================
             // Transit → Waiting time group
             // ============================
-            { m_Setting.GetOptionLabelLocaleID(nameof(Setting.waiting_time_factor)),
-              "Waiting time weight" },
-            { m_Setting.GetOptionDescLocaleID(nameof(Setting.waiting_time_factor)),
-              "Multiplier applied to the waiting time at the initial transit stop." },
-            { m_Setting.GetOptionLabelLocaleID(nameof(Setting.transfer_penalty)),
-              "Transfer penalty" },
-            { m_Setting.GetOptionDescLocaleID(nameof(Setting.transfer_penalty)),
-              "Multiplier applied to the waiting time at each transfer (e.g., 1.5 = +50% perceived wait on transfers)." },
+            { m_Setting.GetOptionLabelLocaleID(nameof(Setting.operational_wait_weight)),
+              "Operational wait weight" },
+            { m_Setting.GetOptionDescLocaleID(nameof(Setting.operational_wait_weight)),
+              "Multiplier applied to operational wait at every transit stop. This branch keeps stop history operational-only, separate from transfer, schedule, and crowd discomfort terms." },
+            { m_Setting.GetOptionLabelLocaleID(nameof(Setting.transfer_disutility_factor)),
+              "Transfer disutility factor" },
+            { m_Setting.GetOptionDescLocaleID(nameof(Setting.transfer_disutility_factor)),
+              "Reserved for a future separate route-choice disutility channel. It no longer writes into stop wait history in this experimental branch." },
 
-            { m_Setting.GetOptionLabelLocaleID(nameof(Setting.scheduled_wt_factor)),
-              "Scheduled-mode wait factor" },
-            { m_Setting.GetOptionDescLocaleID(nameof(Setting.scheduled_wt_factor)),
-              "Multiplier for scheduled modes (rail/ship/air). Example: 0.5 halves perceived waiting for those modes." },
+            { m_Setting.GetOptionLabelLocaleID(nameof(Setting.scheduled_mode_disutility_factor)),
+              "Scheduled-mode disutility factor" },
+            { m_Setting.GetOptionDescLocaleID(nameof(Setting.scheduled_mode_disutility_factor)),
+              "Reserved for a future separate route-choice disutility channel for rail, ship, and air. It is kept out of stop wait history in this experimental branch." },
 
             // Bicycles → age-specific ownership shares
 
@@ -404,14 +587,18 @@ namespace RealisticPathFinding
             
             
 
-            { m_Setting.GetOptionLabelLocaleID(nameof(Setting.crowdness_factor)),
-                    "Crowding factor (max extra wait)" },
-            { m_Setting.GetOptionDescLocaleID(nameof(Setting.crowdness_factor)),
-                    "At high crowding (configurable), increase perceived wait time. Example: 0.15 = +15%, 2.0 = +200% at/above capacity; 0 disables crowding entirely." },
-            { m_Setting.GetOptionLabelLocaleID(nameof(Setting.crowdness_stop_threashold)),
-                      "Crowding threshold (load ratio)" },
-            { m_Setting.GetOptionDescLocaleID(nameof(Setting.crowdness_stop_threashold)),
-                     "Applies crowding penalty when the number of people at a stop reaches or exceeds this fraction of vehicle capacity (0–1). Example: 0.5 means crowding begins when the stop is half a vehicle’s capacity." },
+            { m_Setting.GetOptionLabelLocaleID(nameof(Setting.crowding_discomfort_factor)),
+                    "Crowding discomfort factor" },
+            { m_Setting.GetOptionDescLocaleID(nameof(Setting.crowding_discomfort_factor)),
+                    "Reserved for a future separate route-choice discomfort channel. It no longer pollutes stop wait history in this experimental branch." },
+            { m_Setting.GetOptionLabelLocaleID(nameof(Setting.crowding_discomfort_threshold)),
+                      "Crowding discomfort threshold" },
+            { m_Setting.GetOptionDescLocaleID(nameof(Setting.crowding_discomfort_threshold)),
+                     "Queue-to-capacity ratio where crowd discomfort starts ramping from 0 to 1. Example: 0.5 starts discomfort once the stop reaches half a vehicle load." },
+            { m_Setting.GetOptionLabelLocaleID(nameof(Setting.crowding_overload_wait_factor)),
+                      "Crowding overload wait factor" },
+            { m_Setting.GetOptionDescLocaleID(nameof(Setting.crowding_overload_wait_factor)),
+                     "Adds actual extra wait only when the queue exceeds one vehicle load. Example: 1.0 means a queue at 150% of capacity adds 50% of operational wait as real delay." },
             { m_Setting.GetOptionLabelLocaleID(nameof(Setting.nonbus_buslane_penalty_sec)), "Non-bus on bus-only lane penalty (s)" },
             { m_Setting.GetOptionDescLocaleID(nameof(Setting.nonbus_buslane_penalty_sec)),  "Extra time penalty per bus-only segment for non-bus vehicles. 0 = off." },
 
@@ -443,8 +630,8 @@ namespace RealisticPathFinding
             { m_Setting.GetOptionDescLocaleID(nameof(Setting.ferry_mode_weight)),
               "Multiplier applied to ferry in-vehicle time." },
 
-            { m_Setting.GetOptionLabelLocaleID(nameof(Setting.feeder_trunk_transfer_penalty)), "Feeder→Trunk transfer penalty" },
-            { m_Setting.GetOptionDescLocaleID(nameof(Setting.feeder_trunk_transfer_penalty)), "Multiplier applied to the wait time when transferring from a feeder mode (bus/tram) to a trunk mode (metro/train/ship/plane). Use 1.0 for no extra penalty; values < 1.0 reduce hassle, > 1.0 increase it." },
+            { m_Setting.GetOptionLabelLocaleID(nameof(Setting.feeder_trunk_disutility_factor)), "Feeder→Trunk disutility factor" },
+            { m_Setting.GetOptionDescLocaleID(nameof(Setting.feeder_trunk_disutility_factor)), "Reserved for a future separate route-choice disutility channel when transferring from bus/tram to metro/train/ship/plane. It no longer writes into stop wait history in this experimental branch." },
 
             // ============================
             // Taxi → Taxi options group
