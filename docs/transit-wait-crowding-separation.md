@@ -231,3 +231,281 @@ However, the exact weights that `CitizenUtils.GetPathfindWeights()` returns per 
 5. **Annotate dead code.** Add a comment to the `ScaleWaitingTimesSystem` registration line in `Mod.cs` explaining why it is disabled. Either annotate or remove `ResetTransitMigrationTracking()` depending on whether a settings-reset feature is planned.
 
 Until a writable route-choice hook is confirmed, this branch intentionally stops at clean operational history rather than reintroducing mixed semantics through `WaitTimeEstimate(...)`.
+
+## Update: Decompile Pass 1 (Supersedes Earlier Phase 2 Assumptions)
+
+> Decompiled and re-checked against `Game.dll` on 2026-03-06.
+
+This update supersedes three earlier assumptions in the previous Phase 2 section:
+
+- the relevant transit pathfinding hook is **not** a hypothetical `GetTransportBoardingSpecification(...)`-style method; it is `PathUtils.GetTransportStopSpecification(...)`
+- vanilla normal-citizen `w.y` is **not** usually equal to `w.x`
+- a stop-level postfix can help with stop-global disutility, but it cannot correctly implement transfer-aware disutility by itself
+
+### Confirmed Transit Stop Hook on the Pathfinding Side
+
+`Game.Pathfind.PathUtils.GetTransportStopSpecification(...)` is a real, patchable method that returns a `PathSpecification` for transit stop edges (`decompiled PathUtils.cs:1527-1566`).
+
+`Game.Pathfind.RoutesModifiedSystem` calls that method when rebuilding route graph specs (`decompiled RoutesModifiedSystem.cs:221` and `741`).
+
+`Game.Simulation.WaitingPassengersSystem` adds `PathfindUpdated` when a stop's `m_AverageWaitingTime` changes (`decompiled WaitingPassengersSystem.cs:185-187`), and `RoutesModifiedSystem` listens for `PathfindUpdated` (`decompiled RoutesModifiedSystem.cs:1304`).
+
+That confirms a real route-choice hook on the pathfinding side. It is not just an execution-time estimate path.
+
+The actual vanilla stop-wait formula at that hook is:
+
+```text
+stop_cost_time_seconds =
+    max(transportLine.m_VehicleInterval * 0.5f,
+        waitingPassengers.m_AverageWaitingTime)
+    - RouteUtils.GetStopDuration(transportLineData, transportStop)
+```
+
+Then vanilla applies:
+
+```text
+transportPathfindData.m_StartingCost.m_Value.x =
+    max(0f, transportPathfindData.m_StartingCost.m_Value.x + stop_cost_time_seconds)
+
+transportPathfindData.m_StartingCost.m_Value.z *= transportLine.m_TicketPrice
+transportPathfindData.m_StartingCost.m_Value.w *= (1 - transportStop.m_ComfortFactor)
+```
+
+Important implications:
+
+- the pathfinder is not reading raw `m_AverageWaitingTime` directly into cost without modification
+- the stop edge already combines observed wait, half-headway fallback, stop-duration subtraction, fare, and comfort
+
+A whole-project search of the decompiled game code found only two pathfinding-side readers of `m_AverageWaitingTime`:
+
+- `PathUtils.GetTransportStopSpecification(...)` for public transport
+- `PathUtils.GetTaxiStopSpecification(...)` for taxi stands
+
+For passenger transit, `GetTransportStopSpecification(...)` is the relevant hook.
+
+### Confirmed Stop-History Feedback Path
+
+The operational feedback loop is now re-verified against vanilla game code:
+
+- `ResidentAISystem.WaitTimeEstimate(Entity waypoint, int seconds)` writes directly to `WaitingPassengers.m_ConcludedAccumulation` (`decompiled ResidentAISystem.cs:3981-3986`)
+- successful boarding also writes observed wait into `m_ConcludedAccumulation` and increments `m_SuccessAccumulation` (`decompiled ResidentAISystem.cs:3784-3789`)
+- `WaitingPassengersSystem.TickWaitingPassengersJob` recomputes `m_AverageWaitingTime` from `m_OngoingAccumulation` and `m_ConcludedAccumulation`, then marks the stop with `PathfindUpdated` (`decompiled WaitingPassengersSystem.cs:180-192`)
+
+So the current branch's Phase 1 understanding is now validated end to end:
+
+```text
+WaitTimeEstimate / successful boarding
+    -> WaitingPassengers.m_ConcludedAccumulation
+    -> WaitingPassengersSystem.TickWaitingPassengersJob
+    -> WaitingPassengers.m_AverageWaitingTime
+    -> PathfindUpdated
+    -> RoutesModifiedSystem rebuilds stop PathSpecification
+    -> PathUtils.GetTransportStopSpecification feeds stop wait into route choice
+```
+
+### Confirmed `PathfindCosts` / `PathfindWeights` Facts
+
+`PathUtils.CalculateCost(...)` still computes edge cost as a weighted dot product (`decompiled PathUtils.cs:28-34`):
+
+```text
+total_cost = dot(PathfindWeights, PathfindCosts.m_Value)
+```
+
+That means `m_Value.y` is still a valid seconds-like behavior-time channel. However, one key assumption from the earlier write-up was wrong: vanilla normal citizen trips do **not** usually weight `x` and `y` equally.
+
+`CitizenUtils.GetPathfindWeights(...)` returns (`decompiled CitizenUtils.cs:63-70`):
+
+```text
+w.x = 5 * (4 - 3.75 * citizen.m_LeisureCounter / 255)
+w.y = 2
+w.z = 2500 * max(1, householdCitizens) / max(250, household.m_ConsumptionPerDay)
+w.w = 1 + 2 * random(TrafficComfort)
+```
+
+Derived consequences:
+
+- `w.x` ranges from `20.0` down to `1.25`
+- `w.y` is a constant `2.0`
+- a global `+30` seconds on `m_Value.y` does **not** reproduce the same effect as `+30` seconds on `m_Value.x` for most citizens
+
+This matters because `RoutesModifiedSystem` builds a shared stop `PathSpecification`. A postfix on `GetTransportStopSpecification(...)` can add a global `y`-channel cost per stop, but it cannot tailor that cost to each citizen's `w.x / w.y` ratio.
+
+### What the Verified Hook Can and Cannot Solve
+
+Because `GetTransportStopSpecification(...)` receives stop-level and line-level data, but not passenger trip context, it can support only part of the original disutility split:
+
+| Signal | Available at `GetTransportStopSpecification(...)`? | Notes |
+| --- | --- | --- |
+| stop operational wait | Yes | Already implemented by vanilla via `m_AverageWaitingTime` and half-headway fallback |
+| stop crowding discomfort | Yes | Can be derived from `WaitingPassengers` plus line/vehicle context if supplied by patch |
+| scheduled-mode disutility | Partly yes | Line or mode context is available |
+| transfer disutility | No | No passenger-specific boarding context here |
+| feeder-trunk transfer disutility | No | No previous-leg context here |
+
+This is the most important design update from the decompile pass: a postfix on `GetTransportStopSpecification(...)` is viable for stop-global disutility, but it is **not** sufficient for transfer-aware disutility.
+
+### Revised Approach Assessment
+
+| Approach | Updated assessment |
+| --- | --- |
+| **A1 - Patch `GetTransportStopSpecification(...)`** | Viable now. Best candidate for stop-global crowding or scheduled disutility on the pathfinding side. |
+| **A2 - Use the same hook for transfer penalties** | Not viable as a complete solution. The hook has no transfer or previous-leg context. |
+| **B - Dual-write / rollback around `m_ConcludedAccumulation`** | Still poor. The decompile results do not make this safer. |
+| **C - Separate component plus a later path-evaluation hook** | Still possible, but only if a later transit evaluation point can be found beyond route-graph rebuild. |
+| **D - Treat Phase 1 as the stable endpoint** | Still a valid fallback if no transfer-aware hook is found. |
+
+### Transfer Penalty Findings
+
+The legacy transfer penalty was applied per passenger during path execution, not during path selection.
+
+In the pre-`144a841` version of `RPFRouteUtils.StripTransportSegments(...)`, the mod built a single `seconds` value like this:
+
+```text
+seconds =
+    boarding_time_seconds
+    + scaled_historical_wait_seconds
+
+seconds *= crowding_factor
+seconds *= waiting_weight
+seconds *= scheduled_mode_factor   // rail / ship / air
+seconds *= transfer factor         // transfer_penalty or feeder_trunk_transfer_penalty
+
+seconds -= scaled_historical_wait_seconds
+transportEstimateBuffer.AddWaitEstimate(waypoint, seconds)
+```
+
+The verified transfer-specific part of that legacy flow was:
+
+- compute `isTransfer` as `lastBoardedRoute != currentRoute`
+- multiply by `feeder_trunk_transfer_penalty` when the previous leg was feeder (`Bus`/`Tram`) and the current leg was trunk (`Subway`/`Train`/`Ship`/`Airplane`/`Ferry`)
+- otherwise multiply by `transfer_penalty`
+- subtract the already-counted historical wait already read by vanilla `PathUtils`
+- write the remainder through `transportEstimateBuffer.AddWaitEstimate(...)`
+
+That means the old transfer penalty was not a separate route-choice-only signal. It was written back into stop-history accumulation, which polluted:
+
+```text
+WaitingPassengers.m_ConcludedAccumulation
+    -> WaitingPassengers.m_AverageWaitingTime
+    -> PathUtils.GetTransportStopSpecification(...)
+```
+
+### Current Execution-Side Transfer Tracking
+
+Per-passenger transfer detection is still possible in the current branch, but only in the execution-time integration path.
+
+Verified current flow in `RPFRouteUtils.StripTransportSegments(...)`:
+
+- `ResolveRouteForWaypoint(...)` resolves the currently boarded route for the boarding waypoint
+- `lastBoardedRoute` is carried across successive boardings
+- `lastTransportType` is also carried across successive boardings
+- `isTransfer` is computed per passenger as `lastBoardedRoute != currentRoute`
+- feeder-to-trunk classification is still available from `lastTransportType` plus the current transport type
+
+This is the key boundary:
+
+- individual transfer tracking exists
+- but it exists only while evaluating the already-chosen path during execution
+- it is not available at the shared stop-graph rebuild hook
+
+### Why the Stop-Global Hook Is Still Insufficient
+
+`PathUtils.GetTransportStopSpecification(...)` is a stop-global hook shared by every passenger using that stop.
+
+It has:
+
+- stop-level data
+- line-level data
+- waiting-passenger data
+
+It does **not** have:
+
+- previous boarded route for the specific passenger
+- previous transport mode for the specific passenger
+- a reliable "same line vs changed line" signal for the specific passenger
+
+So it can host stop-global disutility such as:
+
+- crowding discomfort
+- scheduled-mode stop-global adjustments
+
+But it cannot host exact transfer-aware disutility for an individual rider.
+
+### Candidate Transfer-Aware Hook
+
+The first credible transfer-aware pathfinding hook found so far is not `GetTransportStopSpecification(...)`, but `Game.Pathfind.PathfindJobs.PathfindExecutor.AddConnections(...)` (`decompiled PathfindJobs.cs:693-840`).
+
+Why this hook matters:
+
+- it runs during path expansion, not execution
+- it sees the current edge and the candidate next edge in the same transition
+- it has the current accumulated `baseCost`
+- it is the last obvious place to add transition cost before the candidate path is pushed through `AddHeapData(...)`
+
+The nearby `DisallowConnection(...)` method (`decompiled PathfindJobs.cs:959-982`) is also relevant, but only as a transition filter:
+
+- it sees `prevMethod` and `newSpec` together
+- it can allow or block a transition
+- it is **not** the best hook for adding a numeric transfer penalty
+
+For a numeric transfer penalty, `AddConnections(...)` is the right candidate hook. `FindEndNode()` already carries forward the previous `PathMethod` and current `EdgeID` into that transition logic (`decompiled PathfindJobs.cs:583-605`).
+
+### Remaining Blocker for Exact Route-Aware Transfer
+
+Even with the transition hook identified, exact route-aware transfer is still blocked by missing route identity inside the pathfinding job.
+
+What `PathfindJobs` currently tracks:
+
+- previous `PathMethod`
+- current `EdgeID`
+- candidate next `EdgeID`
+
+What it does **not** track directly:
+
+- route entity identity for the current transit edge
+- route entity identity for the candidate transit edge
+
+The graph edge owner is not the route entity itself. For route graph edges, the owner stored in the pathfinding graph is a waypoint or segment entity created by `RoutesModifiedSystem`, not the transport line entity directly.
+
+Route identity is recovered elsewhere through ECS lookups such as `Owner.m_Owner`. That is how route-aware boarding checks work in `RouteUtils.GetBoardingVehicle(...)`.
+
+So the remaining requirement for exact transfer-aware penalties is:
+
+```text
+edge owner entity -> route entity
+```
+
+That mapping must be made available to the pathfinding transition logic if the mod wants to distinguish:
+
+- staying on the same line
+- boarding a different line
+- feeder-to-trunk transfer
+
+Without that mapping, a pathfinding-side patch can only approximate "public transport transition" or "boarding transition". It cannot reliably implement exact "changed line/route" transfer disutility.
+
+Decision for this branch:
+
+- the recommended next search target is route-identity propagation into `PathfindJobs`
+- until that exists, do not re-enable transfer penalties through stop-global wait channels
+
+### Current Work Items After Decompile Pass 1
+
+1. **Prototype a narrow Harmony postfix on `PathUtils.GetTransportStopSpecification(...)`.**
+   Scope it to stop-global terms only: crowding discomfort and possibly scheduled-mode disutility.
+
+2. **Do not re-enable transfer-related disutility through this hook yet.**
+   The verified call site has no per-passenger transfer context, so doing so would silently mis-model the feature.
+
+3. **Choose a calibration policy for `m_Value.y`.**
+   Because vanilla normal-citizen weights are `w.x != w.y`, the injected `y` seconds must either:
+   - target a chosen reference citizen,
+   - use a new exposed multiplier for tuning, or
+   - accept that the new route-choice effect will differ from the old mixed `x`-channel behavior
+
+4. **Search for a later transit-specific hook if transfer penalties must remain functional.**
+   The next search should focus on path expansion or boarding-transition code that has trip context, not only route-stop graph construction.
+
+5. **Annotate branch dead code.**
+   `ScaleWaitingTimesSystem` is still intentionally unregistered in `Mod.cs`, and that should be commented inline so the branch state is explicit.
+
+Until a transfer-aware route-choice hook is verified, this branch should continue treating clean operational history as the primary win and avoid reintroducing mixed semantics through `WaitTimeEstimate(...)`.
