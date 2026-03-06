@@ -143,6 +143,9 @@ All checked items in the implementation status have been verified against the so
 
 3. **`BusLanePatches.cs` has two classes with identical `[HarmonyPatch]` signatures** (`Patch_GetCarDriveSpecification_Road` and `Patch_GetCarDriveSpecification_RoadWithTrack` at lines 30–52 and 62–83). Both target the same method overload. This is a pre-existing issue unrelated to the transit separation work, but it means only one of the two patches can bind — Harmony will likely apply the last one registered and silently ignore the other.
 
+4. **Current mod car-channel mapping is misaligned with vanilla precedent.**
+   The decompile pass shows that vanilla ordinary car turning is primarily modeled through the comfort channel (`TurningCost`, `UTurnCost`, `LaneCrossCost`) and curve angle through time plus comfort (`CurveAngleCost`). By contrast, the current mod injects ordinary car turn penalty into `m_Value.y`. The current mod also injects bus-lane deterrence into `m_Value.x`, while vanilla behavior-channel examples are concentrated in stronger aversion signals such as `UnsafeUTurn`, `ForbiddenCost`, and pedestrian `UnsafeCrosswalk`. This is not a hard correctness bug in the current branch, but it is a channel-alignment mismatch worth recording for later cleanup.
+
 ### Formulas — Correct
 
 All five formulas (`operational_wait_seconds`, `overload_wait_seconds`, `crowding_discomfort_signal`, `stop_history_wait_seconds`, `perceived_wait_seconds`) in the document match the implementation in `BuildTransitWaitProfile`. Edge-case guards (`math.max`, `math.clamp`, `math.saturate`) are properly applied.
@@ -180,20 +183,11 @@ total_cost = dot(PathfindWeights, PathfindCosts.m_Value)
              ─── time ──    ─ behavior ─   ── money ──   ─ comfort ─
 ```
 
-Both `m_Value.x` (time) and `m_Value.y` (behavior-time) are denominated in **seconds**. They are not separate unit systems — the behavior-time channel is just seconds that get weighted differently per citizen or per trip purpose.
+In vanilla decompiled code, `m_Value.x` is the time channel, `m_Value.y` is the behavior channel, `m_Value.z` is the money channel, and `m_Value.w` is the comfort channel. `PathUtils.CalculateCost(...)` adds actual travel time to `x` via `length / speed`, then applies the weighted dot product. `y` is therefore a separate behavior-cost channel, not a proven "same-as-time" unit in the engine's stock implementation.
 
 #### How Citizens Weight the Channels
 
-The `PathfindWeights` are set per pathfind request:
-
-| Context | `w.x` (time) | `w.y` (behavior) | `w.z` (money) | `w.w` (comfort) | Source |
-| --- | --- | --- | --- | --- | --- |
-| Normal citizen trip | varies | varies | varies | varies | `CitizenUtils.GetPathfindWeights(citizen, household, size)` |
-| Boarding vehicle (generic) | 1.0 | 1.0 | 1.0 | 1.0 | `RPFResidentAISystem.cs:3908` |
-| Emergency shelter | 1.0 | 0.2 | 0.0 | 0.1 | `RPFResidentAISystem.cs:4108` |
-| Cargo transport | 1.0 | 1.0 | transportCost | 1.0 | `RPFResourceBuyerSystem.cs:1326` |
-
-For a citizen with `w.x = w.y = 1.0`, adding 30 seconds to `m_Value.y` has exactly the same effect as adding 30 seconds to `m_Value.x`. The difference only shows for citizens whose `GetPathfindWeights()` returns different values for the two channels.
+The `PathfindWeights` are set per pathfind request. For vanilla normal citizen trips, `CitizenUtils.GetPathfindWeights(...)` returns different values for `w.x` and `w.y`, so the behavior channel is not simply weighted the same way as time. Some special-purpose vanilla requests also override the weights entirely rather than using the citizen-default mix.
 
 #### What This Means for Disutility Injection
 
@@ -203,17 +197,17 @@ If Approach A (patching a transit boarding spec method) is viable, the disutilit
 disutility_seconds = perceived_wait_seconds - stop_history_wait_seconds
 ```
 
-This is the **difference** between the full perceived cost (with crowding, transfer, and scheduled-mode multipliers) and the clean operational cost. For a typical citizen with `w.y ≈ 1.0`, adding this value to `m_Value.y` produces the same route-choice effect as the old mixed implementation produced via `m_Value.x` — but without contaminating stop history.
+This is the **difference** between the full perceived cost (with crowding, transfer, and scheduled-mode multipliers) and the clean operational cost. Injecting that difference into `m_Value.y` would use the vanilla behavior channel rather than contaminating stop history, but the route-choice effect would still depend on how vanilla weights `y` against `x` for the specific request type.
 
-However, the exact weights that `CitizenUtils.GetPathfindWeights()` returns per citizen type need to be reverse-engineered by decompiling `CitizenUtils`. If `w.y` is systematically lower than `w.x` for some citizen classes, the effective disutility would be dampened compared to the old implementation. This can be compensated by dividing by the typical `w.y / w.x` ratio, but this requires knowing those ratios first.
+However, the exact weights that `CitizenUtils.GetPathfindWeights()` returns per citizen type still matter. If `w.y` is lower or higher than `w.x` for a given request class, the effective route-choice response to a global `y`-channel add will differ from a same-sized `x`-channel add.
 
-**Bottom line**: the y-channel is in the same unit (seconds) and usually weighted equally with x, so the calibration approach is straightforward. But decompiling `CitizenUtils.GetPathfindWeights()` is a necessary prerequisite to confirm the weight distribution across citizen types.
+**Bottom line**: the y-channel is a real vanilla behavior-cost channel, but it is not interchangeable with `x`. Decompiling `CitizenUtils.GetPathfindWeights()` is a necessary prerequisite to understand how strongly a `y`-channel add would influence vanilla route choice.
 
 ### Candidate Approaches
 
 | Approach | Idea | Feasibility | Risk |
 | --- | --- | --- | --- |
-| **A — Patch transit boarding specification** | If `PathUtils` exposes a `GetTransportBoardingSpecification` or similar method that returns a `PathSpecification` during pathfinding evaluation, a Harmony postfix could add perceived disutility to `PathfindCosts.m_Value.y` (behavior-time channel) — the same pattern `BusLanePatches` uses for car lanes. This would influence route choice without touching stop history. | **Investigate first.** Requires decompiling `PathUtils` to find the right method signature. | Low if the method exists; the pattern is already proven in this codebase. |
+| **A — Patch transit boarding specification** | If `PathUtils` exposes a transit-specific pathfinding method that returns a `PathSpecification`, a Harmony postfix could add perceived disutility to `PathfindCosts.m_Value.y` (behavior channel). This would influence route choice without touching stop history. | **Investigate first.** Requires decompiling `PathUtils` to find the right method signature. | Low if the method exists; the patch pattern itself is straightforward. |
 | **B — Dual-write with frame rollback** | Temporarily inflate `m_ConcludedAccumulation` with disutility terms before pathfinding runs, then restore the clean value after pathfinding completes. | Poor. Requires precise frame-phase timing and risks corrupted values on dropped frames or async job scheduling. | High — fragile and hard to test. |
 | **C — Custom ECS component** | Add a `PerceivedTransitCost` component that stores disutility per stop. Patch the code that reads transit cost during path evaluation to sum `m_AverageWaitingTime + PerceivedTransitCost`. | Medium. Requires finding and patching the pathfinder's transit cost reader. | Medium — the patch point may be in Burst-compiled code. |
 | **D — Accept Phase 1 as terminal** | The clean operational history is already a significant improvement. The unused `PerceivedWaitSeconds` field in `TransitWaitProfile` serves as documentation of intended future use. | Always available. | None — but leaves disutility settings as UI-visible no-ops. |
@@ -222,9 +216,9 @@ However, the exact weights that `CitizenUtils.GetPathfindWeights()` returns per 
 
 1. **Decompile `PathUtils` to find transit-specific boarding/waiting cost methods.** Look for methods analogous to `GetCarDriveSpecification` but for `TransportType.Bus`/`Tram`/etc. If such a method returns a `PathSpecification`, Approach A becomes viable with minimal code.
 
-2. **Decompile `CitizenUtils.GetPathfindWeights()`** to understand the weight distribution across citizen types. This confirms whether `w.y ≈ w.x` for most citizens (making calibration trivial) or whether a correction ratio is needed.
+2. **Decompile `CitizenUtils.GetPathfindWeights()`** to understand the weight distribution across citizen types. This confirms how vanilla behavior cost is weighted relative to time for normal citizen requests and whether a correction ratio is needed.
 
-3. **If Approach A is viable**, implement a `TransitBoardingCostPatch` (similar to `BusLanePatches`) that injects `perceived_wait_seconds - stop_history_wait_seconds` into `PathfindCosts.m_Value.y`. This keeps stop history clean while influencing route choice. The injected value is in seconds, directly comparable to the time channel.
+3. **If Approach A is viable**, implement a `TransitBoardingCostPatch` that injects `perceived_wait_seconds - stop_history_wait_seconds` into `PathfindCosts.m_Value.y`. This keeps stop history clean while influencing route choice through the vanilla behavior channel.
 
 4. **If no patchable method is found**, evaluate whether the disutility settings should remain in the UI with "reserved for future use" labels (current state), or be hidden until a hook is found. Leaving them visible but inert may confuse users.
 
@@ -311,7 +305,7 @@ WaitTimeEstimate / successful boarding
 total_cost = dot(PathfindWeights, PathfindCosts.m_Value)
 ```
 
-That means `m_Value.y` is still a valid seconds-like behavior-time channel. However, one key assumption from the earlier write-up was wrong: vanilla normal citizen trips do **not** usually weight `x` and `y` equally.
+That means `m_Value.y` is still a real vanilla behavior channel. However, one key assumption from the earlier write-up was wrong: vanilla normal citizen trips do **not** usually weight `x` and `y` equally.
 
 `CitizenUtils.GetPathfindWeights(...)` returns (`decompiled CitizenUtils.cs:63-70`):
 
@@ -327,6 +321,19 @@ Derived consequences:
 - `w.x` ranges from `20.0` down to `1.25`
 - `w.y` is a constant `2.0`
 - a global `+30` seconds on `m_Value.y` does **not** reproduce the same effect as `+30` seconds on `m_Value.x` for most citizens
+
+Vanilla stock cost data also shows what the engine tends to place in each channel:
+
+| Vanilla cost item | Stock channel usage |
+| --- | --- |
+| `CarPathfind.m_TurningCost` | comfort |
+| `CarPathfind.m_UTurnCost` | comfort |
+| `CarPathfind.m_LaneCrossCost` | comfort |
+| `CarPathfind.m_CurveAngleCost` | time + comfort |
+| `CarPathfind.m_UnsafeUTurnCost` | behavior + comfort |
+| `CarPathfind.m_ForbiddenCost` | time + behavior + money + comfort |
+| `PedestrianPathfind.m_UnsafeCrosswalkCost` | behavior + comfort |
+| `GetTransportStopSpecification(...)` | mutates `x`, `z`, and `w`, not `y` |
 
 This matters because `RoutesModifiedSystem` builds a shared stop `PathSpecification`. A postfix on `GetTransportStopSpecification(...)` can add a global `y`-channel cost per stop, but it cannot tailor that cost to each citizen's `w.x / w.y` ratio.
 
@@ -497,15 +504,18 @@ Decision for this branch:
    The verified call site has no per-passenger transfer context, so doing so would silently mis-model the feature.
 
 3. **Choose a calibration policy for `m_Value.y`.**
-   Because vanilla normal-citizen weights are `w.x != w.y`, the injected `y` seconds must either:
+   Because vanilla normal-citizen weights are `w.x != w.y`, the injected behavior cost must either:
    - target a chosen reference citizen,
    - use a new exposed multiplier for tuning, or
    - accept that the new route-choice effect will differ from the old mixed `x`-channel behavior
 
-4. **Search for a later transit-specific hook if transfer penalties must remain functional.**
+4. **Record car-channel cleanup as a separate future task.**
+   This is distinct from the transit wait/crowding split. The current mod's ordinary car turn penalty is misaligned with vanilla channel precedent and should move from `m_Value.y` to `m_Value.w`. The current mod's bus-lane deterrence and matching taxi offset should move from `m_Value.x` to `m_Value.y`.
+
+5. **Search for a later transit-specific hook if transfer penalties must remain functional.**
    The next search should focus on path expansion or boarding-transition code that has trip context, not only route-stop graph construction.
 
-5. **Annotate branch dead code.**
+6. **Annotate branch dead code.**
    `ScaleWaitingTimesSystem` is still intentionally unregistered in `Mod.cs`, and that should be commented inline so the branch state is explicit.
 
 Until a transfer-aware route-choice hook is verified, this branch should continue treating clean operational history as the primary win and avoid reintroducing mixed semantics through `WaitTimeEstimate(...)`.
