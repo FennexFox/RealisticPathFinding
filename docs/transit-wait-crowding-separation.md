@@ -100,10 +100,52 @@ Migration rule in this branch:
 - [x] Transit settings renamed to explicit operational/disutility terminology.
 - [x] Legacy transit keys still load from existing settings files.
 - [x] Stop-history feedback now writes only operational wait plus overload delay.
-- [x] `ScaleWaitingTimesSystem` remains operational-only.
+- [x] `ScaleWaitingTimesSystem` remains operational-only (system is currently **unregistered**; see review note below).
 - [x] README wording updated to match the experimental semantics in this branch.
 - [x] Code comments now state that no separate perceived-cost hook was found.
 - [ ] Separate route-choice disutility channel
+
+---
+
+## Review Evaluation
+
+> Reviewed 2026-03-06.
+
+### Problem Awareness — Strong
+
+The core problem is correctly identified: mixing stop-level timing signals with passenger-context disutility multipliers in a single value that feeds back into `WaitingPassengers.m_ConcludedAccumulation` makes stop history unreliable as an indicator of actual stop performance. The six signals enumerated in "Why This Exists" match the original code path exactly.
+
+### Improvement Plan — Sound and Pragmatic
+
+The two-phase approach is well-disciplined. The decision to **not** approximate perceived cost through `WaitTimeEstimate(...)` is correct — doing so would reintroduce the exact contamination this branch removes. Blocking Phase 2 rather than shipping a hidden compromise is the right trade-off for an experimental fork.
+
+### Code Verification
+
+All checked items in the implementation status have been verified against the source:
+
+| Claim | Verified | Location |
+| --- | --- | --- |
+| Settings renamed | ✅ | `Setting.cs:214–290` — new property names with slider attributes |
+| Legacy keys load | ✅ | `Setting.cs:292–345` — write-only setters with `_legacyXxx` backing fields |
+| Migration logic | ✅ | `Setting.cs:133–173` — `MigrateLegacyTransitSettings()` copies legacy→new when new wasn't loaded |
+| Stop history = operational + overload | ✅ | `RPFRouteUtils.cs:137` — `StopHistoryWaitSeconds = ceil(operational + overload)`, no disutility terms |
+| Perceived cost discarded | ✅ | `RPFRouteUtils.cs:261` — `_ = waitProfile.PerceivedWaitSeconds;` with comment |
+| README semantics | ✅ | `README.md:24–29` — describes operational-only wait, reserved disutility channels |
+| `BuildTransitWaitProfile` formulas | ✅ | `RPFRouteUtils.cs:89–139` — all five formulas match the document |
+
+### Issues Found
+
+1. **`ScaleWaitingTimesSystem` is unregistered, not just operational-only.**
+   `Mod.cs:62` is commented out: `//updateSystem.UpdateAfter<ScaleWaitingTimesSystem, ...>`. The system class exists and is correct, but it never runs. This appears intentional — `BuildTransitWaitProfile` already divides by `t2wTimeFactor` at line 105, so enabling the system would **double-apply** the Time2Work correction. The implementation status item now notes this. If the intent is to keep the system as dead code for future use, it should carry a comment in `Mod.cs` explaining why it is disabled.
+
+2. **`ResetTransitMigrationTracking()` has no callers.**
+   `Setting.cs:143–164` defines the method but nothing invokes it. This is likely intended for a future "reset to defaults" UI action. It is harmless dead code, but should be annotated or removed to avoid confusion.
+
+3. **`BusLanePatches.cs` has two classes with identical `[HarmonyPatch]` signatures** (`Patch_GetCarDriveSpecification_Road` and `Patch_GetCarDriveSpecification_RoadWithTrack` at lines 30–52 and 62–83). Both target the same method overload. This is a pre-existing issue unrelated to the transit separation work, but it means only one of the two patches can bind — Harmony will likely apply the last one registered and silently ignore the other.
+
+### Formulas — Correct
+
+All five formulas (`operational_wait_seconds`, `overload_wait_seconds`, `crowding_discomfort_signal`, `stop_history_wait_seconds`, `perceived_wait_seconds`) in the document match the implementation in `BuildTransitWaitProfile`. Edge-case guards (`math.max`, `math.clamp`, `math.saturate`) are properly applied.
 
 ## Validation Checklist
 
@@ -124,12 +166,27 @@ Acceptance checks:
 - `operational_wait_weight` must conceptually apply to all stop waits, not only the first stop
 - user-facing text must describe the implemented semantics, not the old mixed channel
 
-## Follow-Up
+## Follow-Up: Phase 2 Approach Analysis
 
-The next step is to find a separate writable perceived-cost hook that can carry:
+The core challenge for Phase 2: `StripTransportSegments` runs during path **execution** (the citizen has already chosen a path and is about to travel it), not during path **selection** (the native pathfinder is evaluating route alternatives). The pathfinder runs on the C++ side and reads `WaitingPassengers.m_AverageWaitingTime` as its only stop-level cost input. The only writable channel from mod code back to the pathfinder for transit stops is `m_ConcludedAccumulation` → `m_AverageWaitingTime`, which is exactly the channel this branch cleaned up.
 
-- transfer disutility
-- scheduled-mode disutility
-- crowd discomfort
+### Candidate Approaches
 
-Until that hook exists, this branch intentionally stops at clean operational history rather than reintroducing mixed semantics through `WaitTimeEstimate(...)`.
+| Approach | Idea | Feasibility | Risk |
+| --- | --- | --- | --- |
+| **A — Patch transit boarding specification** | If `PathUtils` exposes a `GetTransportBoardingSpecification` or similar method that returns a `PathSpecification` during pathfinding evaluation, a Harmony postfix could add perceived disutility to `PathfindCosts.m_Value.y` (behavior-time channel) — the same pattern `BusLanePatches` uses for car lanes. This would influence route choice without touching stop history. | **Investigate first.** Requires decompiling `PathUtils` to find the right method signature. | Low if the method exists; the pattern is already proven in this codebase. |
+| **B — Dual-write with frame rollback** | Temporarily inflate `m_ConcludedAccumulation` with disutility terms before pathfinding runs, then restore the clean value after pathfinding completes. | Poor. Requires precise frame-phase timing and risks corrupted values on dropped frames or async job scheduling. | High — fragile and hard to test. |
+| **C — Custom ECS component** | Add a `PerceivedTransitCost` component that stores disutility per stop. Patch the code that reads transit cost during path evaluation to sum `m_AverageWaitingTime + PerceivedTransitCost`. | Medium. Requires finding and patching the pathfinder's transit cost reader. | Medium — the patch point may be in Burst-compiled code. |
+| **D — Accept Phase 1 as terminal** | The clean operational history is already a significant improvement. The unused `PerceivedWaitSeconds` field in `TransitWaitProfile` serves as documentation of intended future use. | Always available. | None — but leaves disutility settings as UI-visible no-ops. |
+
+### Recommended Next Steps
+
+1. **Decompile `PathUtils` to find transit-specific boarding/waiting cost methods.** Look for methods analogous to `GetCarDriveSpecification` but for `TransportType.Bus`/`Tram`/etc. If such a method returns a `PathSpecification`, Approach A becomes viable with minimal code.
+
+2. **If Approach A is viable**, implement a `TransitBoardingCostPatch` (similar to `BusLanePatches`) that injects `crowding_discomfort_signal`, transfer disutility, and scheduled-mode disutility into `PathfindCosts.m_Value.y`. This keeps stop history clean while influencing route choice.
+
+3. **If no patchable method is found**, evaluate whether the disutility settings should remain in the UI with "reserved for future use" labels (current state), or be hidden until a hook is found. Leaving them visible but inert may confuse users.
+
+4. **Annotate dead code.** Add a comment to the `ScaleWaitingTimesSystem` registration line in `Mod.cs` explaining why it is disabled. Either annotate or remove `ResetTransitMigrationTracking()` depending on whether a settings-reset feature is planned.
+
+Until a writable route-choice hook is confirmed, this branch intentionally stops at clean operational history rather than reintroducing mixed semantics through `WaitTimeEstimate(...)`.
