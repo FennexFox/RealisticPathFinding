@@ -170,6 +170,45 @@ Acceptance checks:
 
 The core challenge for Phase 2: `StripTransportSegments` runs during path **execution** (the citizen has already chosen a path and is about to travel it), not during path **selection** (the native pathfinder is evaluating route alternatives). The pathfinder runs on the C++ side and reads `WaitingPassengers.m_AverageWaitingTime` as its only stop-level cost input. The only writable channel from mod code back to the pathfinder for transit stops is `m_ConcludedAccumulation` → `m_AverageWaitingTime`, which is exactly the channel this branch cleaned up.
 
+### How `PathfindCosts` Channels and `PathfindWeights` Interact
+
+The pathfinder's total edge cost is a weighted dot product of two float4 vectors:
+
+```text
+total_cost = dot(PathfindWeights, PathfindCosts.m_Value)
+           = w.x * c.x  +  w.y * c.y  +  w.z * c.z  +  w.w * c.w
+             ─── time ──    ─ behavior ─   ── money ──   ─ comfort ─
+```
+
+Both `m_Value.x` (time) and `m_Value.y` (behavior-time) are denominated in **seconds**. They are not separate unit systems — the behavior-time channel is just seconds that get weighted differently per citizen or per trip purpose.
+
+#### How Citizens Weight the Channels
+
+The `PathfindWeights` are set per pathfind request:
+
+| Context | `w.x` (time) | `w.y` (behavior) | `w.z` (money) | `w.w` (comfort) | Source |
+| --- | --- | --- | --- | --- | --- |
+| Normal citizen trip | varies | varies | varies | varies | `CitizenUtils.GetPathfindWeights(citizen, household, size)` |
+| Boarding vehicle (generic) | 1.0 | 1.0 | 1.0 | 1.0 | `RPFResidentAISystem.cs:3908` |
+| Emergency shelter | 1.0 | 0.2 | 0.0 | 0.1 | `RPFResidentAISystem.cs:4108` |
+| Cargo transport | 1.0 | 1.0 | transportCost | 1.0 | `RPFResourceBuyerSystem.cs:1326` |
+
+For a citizen with `w.x = w.y = 1.0`, adding 30 seconds to `m_Value.y` has exactly the same effect as adding 30 seconds to `m_Value.x`. The difference only shows for citizens whose `GetPathfindWeights()` returns different values for the two channels.
+
+#### What This Means for Disutility Injection
+
+If Approach A (patching a transit boarding spec method) is viable, the disutility seconds injected into `m_Value.y` can be calibrated like this:
+
+```text
+disutility_seconds = perceived_wait_seconds - stop_history_wait_seconds
+```
+
+This is the **difference** between the full perceived cost (with crowding, transfer, and scheduled-mode multipliers) and the clean operational cost. For a typical citizen with `w.y ≈ 1.0`, adding this value to `m_Value.y` produces the same route-choice effect as the old mixed implementation produced via `m_Value.x` — but without contaminating stop history.
+
+However, the exact weights that `CitizenUtils.GetPathfindWeights()` returns per citizen type need to be reverse-engineered by decompiling `CitizenUtils`. If `w.y` is systematically lower than `w.x` for some citizen classes, the effective disutility would be dampened compared to the old implementation. This can be compensated by dividing by the typical `w.y / w.x` ratio, but this requires knowing those ratios first.
+
+**Bottom line**: the y-channel is in the same unit (seconds) and usually weighted equally with x, so the calibration approach is straightforward. But decompiling `CitizenUtils.GetPathfindWeights()` is a necessary prerequisite to confirm the weight distribution across citizen types.
+
 ### Candidate Approaches
 
 | Approach | Idea | Feasibility | Risk |
@@ -183,10 +222,12 @@ The core challenge for Phase 2: `StripTransportSegments` runs during path **exec
 
 1. **Decompile `PathUtils` to find transit-specific boarding/waiting cost methods.** Look for methods analogous to `GetCarDriveSpecification` but for `TransportType.Bus`/`Tram`/etc. If such a method returns a `PathSpecification`, Approach A becomes viable with minimal code.
 
-2. **If Approach A is viable**, implement a `TransitBoardingCostPatch` (similar to `BusLanePatches`) that injects `crowding_discomfort_signal`, transfer disutility, and scheduled-mode disutility into `PathfindCosts.m_Value.y`. This keeps stop history clean while influencing route choice.
+2. **Decompile `CitizenUtils.GetPathfindWeights()`** to understand the weight distribution across citizen types. This confirms whether `w.y ≈ w.x` for most citizens (making calibration trivial) or whether a correction ratio is needed.
 
-3. **If no patchable method is found**, evaluate whether the disutility settings should remain in the UI with "reserved for future use" labels (current state), or be hidden until a hook is found. Leaving them visible but inert may confuse users.
+3. **If Approach A is viable**, implement a `TransitBoardingCostPatch` (similar to `BusLanePatches`) that injects `perceived_wait_seconds - stop_history_wait_seconds` into `PathfindCosts.m_Value.y`. This keeps stop history clean while influencing route choice. The injected value is in seconds, directly comparable to the time channel.
 
-4. **Annotate dead code.** Add a comment to the `ScaleWaitingTimesSystem` registration line in `Mod.cs` explaining why it is disabled. Either annotate or remove `ResetTransitMigrationTracking()` depending on whether a settings-reset feature is planned.
+4. **If no patchable method is found**, evaluate whether the disutility settings should remain in the UI with "reserved for future use" labels (current state), or be hidden until a hook is found. Leaving them visible but inert may confuse users.
+
+5. **Annotate dead code.** Add a comment to the `ScaleWaitingTimesSystem` registration line in `Mod.cs` explaining why it is disabled. Either annotate or remove `ResetTransitMigrationTracking()` depending on whether a settings-reset feature is planned.
 
 Until a writable route-choice hook is confirmed, this branch intentionally stops at clean operational history rather than reintroducing mixed semantics through `WaitTimeEstimate(...)`.
