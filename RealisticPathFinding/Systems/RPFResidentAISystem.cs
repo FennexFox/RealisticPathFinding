@@ -278,11 +278,12 @@ public partial class RPFResidentAISystem : GameSystemBase
             m_ParkedToMovingTrailerAddTypes = this.m_ParkedToMovingTrailerAddTypes,
             m_DeletedResidents = this.m_DeletedResidents,
             m_TimeOfDay = this.m_TimeSystem.normalizedTime,
-            kCrowd = Mod.m_Setting.crowdness_factor,
-            scheduled_factor = Mod.m_Setting.scheduled_wt_factor,
-            transfer_penalty = Mod.m_Setting.transfer_penalty,
-            feeder_trunk_transfer_penalty = Mod.m_Setting.feeder_trunk_transfer_penalty,
-            crowdness_stop_threashold = Mod.m_Setting.crowdness_stop_threashold,
+            crowding_discomfort_factor = Mod.m_Setting.crowding_discomfort_factor,
+            scheduled_mode_disutility_factor = Mod.m_Setting.scheduled_mode_disutility_factor,
+            transfer_disutility_factor = Mod.m_Setting.transfer_disutility_factor,
+            feeder_trunk_disutility_factor = Mod.m_Setting.feeder_trunk_disutility_factor,
+            crowding_discomfort_threshold = Mod.m_Setting.crowding_discomfort_threshold,
+            crowding_overload_wait_factor = Mod.m_Setting.crowding_overload_wait_factor,
             ComfortMeters = comfort,
             RampMeters = ramp,
             MinSpeedMult = minMult,
@@ -293,7 +294,7 @@ public partial class RPFResidentAISystem : GameSystemBase
             bike_long_ramp_m = Mod.m_Setting.bike_long_ramp_m,
             bike_long_min_mult = Mod.m_Setting.bike_long_min_mult,
             t2w_timefactor = Time2WorkInterop.GetFactor(),
-            waiting_weight = Mod.m_Setting.waiting_time_factor,
+            operational_wait_weight = Mod.m_Setting.operational_wait_weight,
             m_PathfindQueue = this.m_PathfindSetupSystem.GetQueue((object)this, 64 /*0x40*/).AsParallelWriter(),
             m_BoardingQueue = this.m_Actions.m_BoardingQueue.AsParallelWriter(),
             m_ActionQueue = this.m_Actions.m_ActionQueue.AsParallelWriter(),
@@ -783,16 +784,17 @@ public partial class RPFResidentAISystem : GameSystemBase
         [ReadOnly] public ComponentLookup<Game.Routes.WaitingPassengers> m_WaitingPassengers;
         [ReadOnly] public ComponentLookup<Game.Prefabs.PublicTransportVehicleData> m_PublicTransportVehicleData;
         [ReadOnly] public float t2w_timefactor;
-        [ReadOnly] public float waiting_weight;
-        [ReadOnly] public float crowdness_stop_threashold;
+        [ReadOnly] public float operational_wait_weight;
+        [ReadOnly] public float crowding_discomfort_threshold;
+        [ReadOnly] public float crowding_overload_wait_factor;
         public NativeQueue<SetupQueueItem>.ParallelWriter m_PathfindQueue;
         public NativeQueue<ResidentAISystem.Boarding>.ParallelWriter m_BoardingQueue;
         public NativeQueue<ResidentAISystem.ResidentAction>.ParallelWriter m_ActionQueue;
         public EntityCommandBuffer.ParallelWriter m_CommandBuffer;
-        public float kCrowd;
-        public float scheduled_factor;
-        public float transfer_penalty;
-        public float feeder_trunk_transfer_penalty;
+        public float crowding_discomfort_factor;
+        public float scheduled_mode_disutility_factor;
+        public float transfer_disutility_factor;
+        public float feeder_trunk_disutility_factor;
         public float ComfortMeters;
         public float RampMeters;
         public float MinSpeedMult;
@@ -2466,7 +2468,7 @@ public partial class RPFResidentAISystem : GameSystemBase
                 m_BoardingQueue = this.m_BoardingQueue
             };
 
-            RPFRouteUtils.StripTransportSegments<RPFResidentAISystem.ResidentTickJob.TransportEstimateBuffer>(ref random, length, pathElement1, this.m_RouteConnectedData, this.m_BoardingVehicleData, this.m_OwnerData, this.m_LaneData, this.m_ConnectionLaneData, this.m_CurveData, this.m_PrefabRefData, this.m_PrefabTransportStopData, this.m_SubLanes, this.m_AreaNodes, this.m_AreaTriangles, this.m_WaitingPassengers, this.m_CurrentRouteData, this.m_PublicTransportVehicleData, kCrowd, scheduled_factor, transfer_penalty, feeder_trunk_transfer_penalty, t2w_timefactor, waiting_weight, crowdness_stop_threashold, transportEstimateBuffer);
+            RPFRouteUtils.StripTransportSegments<RPFResidentAISystem.ResidentTickJob.TransportEstimateBuffer>(ref random, length, pathElement1, this.m_RouteConnectedData, this.m_BoardingVehicleData, this.m_OwnerData, this.m_LaneData, this.m_ConnectionLaneData, this.m_CurveData, this.m_PrefabRefData, this.m_PrefabTransportStopData, this.m_SubLanes, this.m_AreaNodes, this.m_AreaTriangles, this.m_WaitingPassengers, this.m_CurrentRouteData, this.m_PublicTransportVehicleData, crowding_discomfort_factor, scheduled_mode_disutility_factor, transfer_disutility_factor, feeder_trunk_disutility_factor, t2w_timefactor, operational_wait_weight, crowding_discomfort_threshold, crowding_overload_wait_factor, transportEstimateBuffer);
             if (!this.m_OwnerData.HasComponent(currentLane.m_Lane))
                 return false;
             Entity owner = this.m_OwnerData[currentLane.m_Lane].m_Owner;

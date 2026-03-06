@@ -8,7 +8,8 @@ using Unity.Mathematics;
 
 namespace RealisticPathFinding.Systems
 {
-    // Runs on main thread; cheap pass over WaitingPassengers
+    // Runs on main thread; cheap pass over WaitingPassengers.
+    // This stays operational-only and must not be used for route-choice disutility terms.
     public partial class ScaleWaitingTimesSystem : GameSystemBase
     {
         protected override void OnUpdate()

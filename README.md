@@ -1,12 +1,12 @@
 # Realistic Path Finding
 
-A Cities: Skylines II mod that replaces the vanilla pathfinding cost model with a more realistic one — giving citizens, vehicles, and transit riders nuanced, configurable travel behaviour.
+A Cities: Skylines II mod that replaces the vanilla pathfinding cost model with a more realistic one, giving citizens, vehicles, and transit riders more configurable travel behaviour.
 
 ---
 
 ## Features
 
-### 🚗 Vehicles
+### Vehicles
 
 | Feature | Description |
 | --- | --- |
@@ -14,30 +14,30 @@ A Cities: Skylines II mod that replaces the vanilla pathfinding cost model with 
 | **Road hierarchy bias** | Adds a density cost to collector, local, and alleyway roads, pushing traffic toward higher-class roads. |
 | **Congestion feedback (EWMA)** | Monitors real in-game travel times per lane and feeds live congestion back into routing costs via exponential smoothing. |
 | **Car mode weight** | Scales perceived in-vehicle car time to balance car vs. public transport attractiveness. |
-| **Stochastic route choice** | Adds a tunable "temperature" parameter so route splits among near-equal paths feel more natural. |
+| **Stochastic route choice** | Adds a tunable temperature parameter so route splits among near-equal paths feel more natural. |
 
-### 🚌 Transit
+### Transit
 
 | Feature | Description |
 | --- | --- |
-| **Waiting time weight** | Multiplies the perceived first-stop wait, making it more or less painful than in-vehicle time. |
-| **Transfer penalty** | Applies an extra multiplier to wait time at each transfer. |
-| **Feeder→trunk transfer penalty** | Separate multiplier for transferring from a bus/tram to metro/train/ship. |
-| **Scheduled mode wait factor** | Reduces (or increases) perceived wait for rail and ship modes. |
-| **Crowding penalty** | Adds a saturating crowding-aversion penalty near a configurable threshold and extra expected wait once the queue exceeds roughly one vehicle load. |
+| **Operational wait weight** | Multiplies operational wait at every transit stop in this experimental branch. |
+| **Transfer disutility factor** | Reserved for a future separate route-choice channel; it no longer writes into stop wait history. |
+| **Feeder-to-trunk disutility factor** | Reserved for a future separate route-choice channel for bus/tram to metro/train/ship transfers. |
+| **Scheduled-mode disutility factor** | Reserved for a future separate route-choice channel for rail, ship, and air. |
+| **Crowding overload/discomfort split** | Stop history records operational wait plus overload delay only; crowd discomfort is documented separately for a future route-choice hook. |
 | **Mode weights** | Individual in-vehicle time multipliers for bus, tram, subway, train, and ferry. |
 | **Bus lane penalty** | Adds a time penalty for non-bus vehicles using bus-only lanes. |
 
-### 🚶 Pedestrians
+### Pedestrians
 
 | Feature | Description |
 | --- | --- |
 | **Age-specific walk speeds** | Sets separate walking speeds for children, teens, adults, and the elderly. |
 | **Walking cost multiplier** | Globally scales pedestrian path cost to control how attractive walking is. |
 | **Long-distance penalty** | Ramps down perceived walk speed beyond a comfort distance, discouraging very long walks. |
-| **Crosswalk cost factors** | Separate multipliers for safe crosswalks and unsafe (jaywalking) crossings. |
+| **Crosswalk cost factors** | Separate multipliers for safe crosswalks and unsafe crossings. |
 
-### 🚲 Bicycles
+### Bicycles
 
 | Feature | Description |
 | --- | --- |
@@ -45,7 +45,7 @@ A Cities: Skylines II mod that replaces the vanilla pathfinding cost model with 
 | **Short-trip penalty** | Penalises very short bike trips, keeping walking competitive for nearby destinations. |
 | **Long-trip penalty** | Gradually discourages cycling beyond a comfort distance, favouring transit or cars. |
 
-### 🚕 Taxi
+### Taxi
 
 | Feature | Description |
 | --- | --- |
@@ -53,7 +53,7 @@ A Cities: Skylines II mod that replaces the vanilla pathfinding cost model with 
 
 ## Configuration
 
-All settings are available in **Options → Realistic Path Finding**.
+All settings are available in **Options -> Realistic Path Finding**.
 
 ### Notable defaults
 
@@ -64,10 +64,12 @@ All settings are available in **Options → Realistic Path Finding**.
 | Collector bias | 0.05 | Mild highway preference |
 | Local bias | 0.10 | Discourages cut-throughs |
 | Alleyway bias | 0.15 | Strong preference away from alleys |
-| Transfer penalty | 1.5× | 50 % extra perceived wait per transfer |
-| Crowding factor (WIP) | 0.30 | Up to +30 % wait at capacity |
+| Operational wait weight | 1.00 | Applies to all stop operational wait |
+| Transfer disutility factor | 1.5x | Reserved for a future separate perceived-cost channel |
+| Crowding discomfort factor | 0.30 | Reserved for a future separate perceived-cost channel |
+| Crowding overload wait factor | 1.00 | Adds real wait only above one vehicle load |
 | Adult walk speed | 3.1 mph | Realistic average |
-| Ped walk factor | 1.6 | 60% extra percived travel time when walking |
+| Ped walk factor | 1.6 | 60% extra perceived travel time when walking |
 | Adult bike % | 25 % | 1-in-4 adults may cycle |
 
 ---
@@ -76,8 +78,8 @@ All settings are available in **Options → Realistic Path Finding**.
 
 | Mod | Status |
 | --- | --- |
-| **Realistic Trips(Time2Work)** | ✅ Detected automatically — trip timing is adjusted accordingly |
-| Other pathfinding mods | ⚠️ May conflict — use **Disable walking cost multiplier** if pedestrian issues arise |
+| **Realistic Trips (Time2Work)** | Detected automatically; trip timing is adjusted accordingly |
+| Other pathfinding mods | May conflict; use **Disable walking cost multiplier** if pedestrian issues arise |
 
 ---
 

@@ -64,7 +64,81 @@ namespace RealisticPathFinding.Utils
             return math.clamp(math.exp(x), 0.85f, 1.15f);
         }
 
-        public static void StripTransportSegments<TTransportEstimateBuffer>(ref Unity.Mathematics.Random random, int length, DynamicBuffer<PathElement> path, ComponentLookup<Connected> connectedData, ComponentLookup<BoardingVehicle> boardingVehicleData, ComponentLookup<Owner> ownerData, ComponentLookup<Lane> laneData, ComponentLookup<Game.Net.ConnectionLane> connectionLaneData, ComponentLookup<Curve> curveData, ComponentLookup<PrefabRef> prefabRefData, ComponentLookup<TransportStopData> prefabTransportStopData, BufferLookup<Game.Net.SubLane> subLanes, BufferLookup<Game.Areas.Node> areaNodes, BufferLookup<Triangle> areaTriangles, ComponentLookup<Game.Routes.WaitingPassengers> waitingPassengersData, ComponentLookup<Game.Routes.CurrentRoute> currentRouteData, ComponentLookup<Game.Prefabs.PublicTransportVehicleData> publicTransportVehicleData, float kCrowd, float schedule_factor, float transfer_penalty, float feeder_trunk_transfer_penalty, float t2w_timefactor, float waiting_weight, float crowdness_stop_threashold, TTransportEstimateBuffer transportEstimateBuffer) where TTransportEstimateBuffer : unmanaged, ITransportEstimateBuffer
+        readonly struct TransitWaitProfile
+        {
+            public readonly float OperationalWaitSeconds;
+            public readonly float OverloadWaitSeconds;
+            public readonly float CrowdingDiscomfortSignal;
+            public readonly int StopHistoryWaitSeconds;
+            public readonly int PerceivedWaitSeconds;
+
+            public TransitWaitProfile(float operationalWaitSeconds, float overloadWaitSeconds, float crowdingDiscomfortSignal, int stopHistoryWaitSeconds, int perceivedWaitSeconds)
+            {
+                OperationalWaitSeconds = operationalWaitSeconds;
+                OverloadWaitSeconds = overloadWaitSeconds;
+                CrowdingDiscomfortSignal = crowdingDiscomfortSignal;
+                StopHistoryWaitSeconds = stopHistoryWaitSeconds;
+                PerceivedWaitSeconds = perceivedWaitSeconds;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static bool IsScheduledMode(TransportType t) =>
+            t == TransportType.Train || t == TransportType.Ship || t == TransportType.Airplane;
+
+        static TransitWaitProfile BuildTransitWaitProfile(
+            int boardingSeconds,
+            WaitingPassengers waitingPassengers,
+            int capacity,
+            TransportType currentTransportType,
+            TransportType previousTransportType,
+            bool isTransfer,
+            float t2wTimeFactor,
+            float operationalWaitWeight,
+            float transferDisutilityFactor,
+            float feederTrunkDisutilityFactor,
+            float scheduledModeDisutilityFactor,
+            float crowdingDiscomfortFactor,
+            float crowdingDiscomfortThreshold,
+            float crowdingOverloadWaitFactor)
+        {
+            float scaledHistoricalWaitSeconds = waitingPassengers.m_AverageWaitingTime / math.max(1e-3f, t2wTimeFactor);
+            float operationalWaitSeconds = math.max(0f, boardingSeconds + scaledHistoricalWaitSeconds);
+            float queueRatio = capacity > 0 ? waitingPassengers.m_Count / math.max(1f, capacity) : 0f;
+            float overloadRatio = math.max(0f, queueRatio - 1f);
+            float overloadWaitSeconds = operationalWaitSeconds * math.max(0f, crowdingOverloadWaitFactor) * overloadRatio;
+
+            float threshold = math.clamp(crowdingDiscomfortThreshold, 0f, 0.999f);
+            float crowdingDiscomfortSignal = 0f;
+            if (capacity > 0)
+            {
+                crowdingDiscomfortSignal = math.saturate((queueRatio - threshold) / math.max(1e-3f, 1f - threshold));
+            }
+
+            float perceivedWaitSeconds = (operationalWaitSeconds + overloadWaitSeconds) * math.max(0f, operationalWaitWeight);
+            perceivedWaitSeconds *= 1f + math.max(0f, crowdingDiscomfortFactor) * crowdingDiscomfortSignal;
+
+            if (IsScheduledMode(currentTransportType))
+            {
+                perceivedWaitSeconds *= math.max(0f, scheduledModeDisutilityFactor);
+            }
+
+            if (isTransfer)
+            {
+                perceivedWaitSeconds *= IsFeeder(previousTransportType) && IsTrunk(currentTransportType)
+                    ? math.max(0f, feederTrunkDisutilityFactor)
+                    : math.max(0f, transferDisutilityFactor);
+            }
+
+            return new TransitWaitProfile(
+                operationalWaitSeconds,
+                overloadWaitSeconds,
+                crowdingDiscomfortSignal,
+                (int)math.ceil(math.max(0f, operationalWaitSeconds + overloadWaitSeconds)),
+                (int)math.ceil(math.max(0f, perceivedWaitSeconds)));
+        }
+
+        public static void StripTransportSegments<TTransportEstimateBuffer>(ref Unity.Mathematics.Random random, int length, DynamicBuffer<PathElement> path, ComponentLookup<Connected> connectedData, ComponentLookup<BoardingVehicle> boardingVehicleData, ComponentLookup<Owner> ownerData, ComponentLookup<Lane> laneData, ComponentLookup<Game.Net.ConnectionLane> connectionLaneData, ComponentLookup<Curve> curveData, ComponentLookup<PrefabRef> prefabRefData, ComponentLookup<TransportStopData> prefabTransportStopData, BufferLookup<Game.Net.SubLane> subLanes, BufferLookup<Game.Areas.Node> areaNodes, BufferLookup<Triangle> areaTriangles, ComponentLookup<Game.Routes.WaitingPassengers> waitingPassengersData, ComponentLookup<Game.Routes.CurrentRoute> currentRouteData, ComponentLookup<Game.Prefabs.PublicTransportVehicleData> publicTransportVehicleData, float crowdingDiscomfortFactor, float scheduledModeDisutilityFactor, float transferDisutilityFactor, float feederTrunkDisutilityFactor, float t2wTimeFactor, float operationalWaitWeight, float crowdingDiscomfortThreshold, float crowdingOverloadWaitFactor, TTransportEstimateBuffer transportEstimateBuffer) where TTransportEstimateBuffer : unmanaged, ITransportEstimateBuffer
         {
             int num = 0;
             Entity lastBoardedRoute = Entity.Null;
@@ -147,68 +221,48 @@ namespace RealisticPathFinding.Utils
                     ref boardingVehicleData,
                     ref currentRouteData);
 
-                int seconds = MathUtils.RoundToIntRandom(ref random, componentData.m_BoardingTime);
-                var wp = waitingPassengersData[pathElement.m_Target];
-                if (waitingPassengersData.HasComponent(pathElement.m_Target))
+                if (!waitingPassengersData.HasComponent(pathElement.m_Target))
                 {
-                    seconds += (int)(wp.m_AverageWaitingTime / t2w_timefactor); // already in seconds
-
-                    // --- crowding factor using capacity normalization ---
-                    float crowdingFactor = 1f;
-                    if (capacity > 0)
-                    {
-                        if(wp.m_Count > (float)capacity* crowdness_stop_threashold)
-                        {
-                            // signal ~ 0 when few waiting; ~1 when roughly one vehicle-load of people wait
-                            float signal = math.saturate(wp.m_Count / (float)capacity);
-                            // pick your kCrowd (e.g., 0.3 = up to +30% perceived wait at one full vehicle queue)
-                            crowdingFactor = 1f + kCrowd * signal;
-                        } 
-                    }
-
-                    seconds = (int)math.ceil(seconds * crowdingFactor* waiting_weight);
-
-                }
-
-                if (seconds > 0)
-                {
-                    //If realistic trips exists, adjust for its time factor
-                    //seconds = (int)((float)seconds/t2w_timefactor);
-                    if (componentData.m_TransportType == TransportType.Train || componentData.m_TransportType == TransportType.Ship || componentData.m_TransportType == TransportType.Airplane)
-                    {
-                        // Boarding time is halved for trains, ships and airplanes since it is assumed that those modes run less frequently and with a set schedule that is known to the passenger
-                        seconds = (int)((float)seconds*schedule_factor);
-                    }
-
-                    // ----- APPLY TRANSFER PENALTY (wait only) -----
-                    bool isTransfer = (lastBoardedRoute != Entity.Null) && (currentRoute != Entity.Null) && (currentRoute != lastBoardedRoute);
-
-                    if (isTransfer)
-                    {
-                        if (IsFeeder(lastTransportType) && IsTrunk(componentData.m_TransportType))
-                        {
-                            seconds = (int)math.ceil(seconds * feeder_trunk_transfer_penalty);
-                        } else
-                        {
-                            seconds = (int)math.ceil(seconds * transfer_penalty);
-                        }    
-                    }
-                        
                     if (currentRoute != Entity.Null)
                     {
-                        lastBoardedRoute = currentRoute;   // first boarding sets the baseline route; later changes are transfers
+                        lastBoardedRoute = currentRoute;
                         lastTransportType = componentData.m_TransportType;
                     }
+                    continue;
+                }
 
-                    seconds -= (int)(wp.m_AverageWaitingTime / t2w_timefactor); // subtract wating time already counted by the game in PathUtils
+                int boardingSeconds = MathUtils.RoundToIntRandom(ref random, componentData.m_BoardingTime);
+                var waitingPassengers = waitingPassengersData[pathElement.m_Target];
+                bool isTransfer = (lastBoardedRoute != Entity.Null) && (currentRoute != Entity.Null) && (currentRoute != lastBoardedRoute);
+                TransitWaitProfile waitProfile = BuildTransitWaitProfile(
+                    boardingSeconds,
+                    waitingPassengers,
+                    capacity,
+                    componentData.m_TransportType,
+                    lastTransportType,
+                    isTransfer,
+                    t2wTimeFactor,
+                    operationalWaitWeight,
+                    transferDisutilityFactor,
+                    feederTrunkDisutilityFactor,
+                    scheduledModeDisutilityFactor,
+                    crowdingDiscomfortFactor,
+                    crowdingDiscomfortThreshold,
+                    crowdingOverloadWaitFactor);
 
-                    if(seconds < 0)
-                    {
-                        continue;
-                    }
+                if (currentRoute != Entity.Null)
+                {
+                    lastBoardedRoute = currentRoute;
+                    lastTransportType = componentData.m_TransportType;
+                }
 
-                    //Mod.log.Info($"Adding boarding time estimate of {seconds} seconds for transport type {componentData.m_TransportType}. IsTransfer:{isTransfer}");
-                    transportEstimateBuffer.AddWaitEstimate(pathElement.m_Target, seconds);
+                // No separate route-choice hook exists beyond WaitTimeEstimate in the current integration surface.
+                // Keep perceived terms out of stop history until such a hook is found.
+                _ = waitProfile.PerceivedWaitSeconds;
+
+                if (waitProfile.StopHistoryWaitSeconds > 0)
+                {
+                    transportEstimateBuffer.AddWaitEstimate(pathElement.m_Target, waitProfile.StopHistoryWaitSeconds);
                 }
             }
         }

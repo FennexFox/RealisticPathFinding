@@ -39,6 +39,7 @@ namespace RealisticPathFinding
 
 
             AssetDatabase.global.LoadSettings(nameof(RealisticPathFinding), m_Setting, new Setting(this));
+            m_Setting.MigrateLegacyTransitSettings();
 
             bool realisticTripsMod = false;
             foreach (var modInfo in GameManager.instance.modManager)
